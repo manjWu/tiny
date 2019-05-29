@@ -78,6 +78,8 @@ averageImage = reshape(net.meta.normalization.averageImage,1,1,3);
 
 % reference boxes of templates
 clusters = net.meta.clusters;
+fprintf("cluster:");
+clusters(:,4)
 clusters_h = clusters(:,4) - clusters(:,2) + 1;
 clusters_w = clusters(:,3) - clusters(:,1) + 1;
 normal_idx = find(clusters(:,5) == 1);
@@ -102,13 +104,15 @@ end
 raw_img = single(raw_img);
 [raw_h, raw_w, ~] = size(raw_img) ;
 min_scale = min(floor(log2(max(clusters_w(normal_idx)/raw_w))),...
-                floor(log2(max(clusters_h(normal_idx)/raw_h))));
+                floor(log2(max(clusters_h(normal_idx)/raw_h))));%floor(x):不超过x 的最大整数.(高斯取整)
 max_scale = min(1, -log2(max(raw_h, raw_w)/MAX_INPUT_DIM));
-scales = [min_scale:0, 0.5:0.5:max_scale];
+% scales = [min_scale:0, 0.5:0.5:max_scale];
+scales = [-1,0,1]
+
 
 for s = 2.^scales
   img = imresize(raw_img, s, 'bilinear');
-  img = bsxfun(@minus, img, averageImage);
+  img = bsxfun(@minus, img, averageImage);%减均值
 
   fprintf('Processing %s at scale %f.\n', image_path, s);
   
@@ -117,36 +121,38 @@ for s = 2.^scales
   end
 
   % we don't run every template on every scale
-  % ids of templates to ignore 
+  % ids of templates to ignore
+  % 根据缩放比率（大目标、小目标）选择使用模板
   tids = [];
   if s <= 1, tids = 5:12;
   else, tids = [5:12 19:25];
   end
-  ignoredTids = setdiff(1:size(clusters,1), tids);
+  ignoredTids = setdiff(1:size(clusters,1), tids);%从矩阵中去掉某些元素
 
   % run through the net
   [img_h, img_w, ~] = size(img);
   inputs = {'data', img};
-  net.eval(inputs);
+  net.eval(inputs); %输入inputs，进行一次前向传播
 
   % collect scores 
-  score_cls = gather(net.vars(net.getVarIndex('score_cls')).value);
+  score_cls = gather(net.vars(net.getVarIndex('score_cls')).value); %获取score_cls的输出值（矩阵）
   score_reg = gather(net.vars(net.getVarIndex('score_reg')).value);
   prob_cls = gather(net.vars(net.getVarIndex('prob_cls')).value);
+  %prob_cls = sigmoid(score_cls)，（因为net.addLayer('prob_cls', dagnn.Sigmoid(), 'score_cls', 'prob_cls');）
   prob_cls(:,:,ignoredTids) = 0;
 
   % threshold for detection
-  idx = find(prob_cls > prob_thresh);
-  [fy,fx,fc] = ind2sub(size(prob_cls), idx);
+  idx = find(prob_cls > prob_thresh);%寻找满足置信度阈值要求的索引
+  [fy,fx,fc] = ind2sub(size(prob_cls), idx);%ind2sub根据索引来确定该元素在矩阵中的下标号（matlab的序号是列优先于行的）
 
   % interpret heatmap into bounding boxes 
-  cy = (fy-1)*8 - 1; cx = (fx-1)*8 - 1;
-  ch = clusters(fc,4) - clusters(fc,2) + 1;
+  cy = (fy-1)*8 - 1; cx = (fx-1)*8 - 1;%为什么是乘以8?这是当前特征图坐标与原始图像坐标之间的映射关系。得到在原始图像中的（矩形中心）坐标（后续会进行修正）。
+  ch = clusters(fc,4) - clusters(fc,2) + 1;%得到在原始图像中的矩形高（模板）（后续会进行修正）。
   cw = clusters(fc,3) - clusters(fc,1) + 1;
 
   % extract bounding box refinement
   Nt = size(clusters, 1); 
-  tx = score_reg(:,:,1:Nt); 
+  tx = score_reg(:,:,1:Nt); %获取矩形参数的修正系数。
   ty = score_reg(:,:,Nt+1:2*Nt); 
   tw = score_reg(:,:,2*Nt+1:3*Nt); 
   th = score_reg(:,:,3*Nt+1:4*Nt); 
@@ -154,25 +160,25 @@ for s = 2.^scales
   % refine bounding boxes
   dcx = cw .* tx(idx); 
   dcy = ch .* ty(idx);
-  rcx = cx + dcx;
+  rcx = cx + dcx;%修正之后的中心坐标
   rcy = cy + dcy;
-  rcw = cw .* exp(tw(idx));
+  rcw = cw .* exp(tw(idx));%修正之后的宽度
   rch = ch .* exp(th(idx));
 
   %
   scores = score_cls(idx);
-  tmp_bboxes = [rcx-rcw/2, rcy-rch/2, rcx+rcw/2, rcy+rch/2];
+  tmp_bboxes = [rcx-rcw/2, rcy-rch/2, rcx+rcw/2, rcy+rch/2];%[左上顶点x, 左上顶点y, 右下顶点x, 右下顶点y]
 
-  tmp_bboxes = horzcat(tmp_bboxes ./ s, scores);
+  tmp_bboxes = horzcat(tmp_bboxes ./ s, scores);%除以缩放比率s以还原尺寸，并附上得分score。
 
-  bboxes = vertcat(bboxes, tmp_bboxes);
+  bboxes = vertcat(bboxes, tmp_bboxes);%将每种比率s的矩形框都集合起来。
 end
 
 % nms 
 ridx = nms(bboxes(:,[1:4 end]), nms_thresh); 
 bboxes = bboxes(ridx,:);
 
-%
+%确保矩形不超出边界。
 bboxes(:,[2 4]) = max(1, min(raw_h, bboxes(:,[2 4])));
 bboxes(:,[1 3]) = max(1, min(raw_w, bboxes(:,[1 3])));
 

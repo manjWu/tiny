@@ -15,9 +15,30 @@ opts.weightDecay = 1 ;
 opts.weightInitMethod = 'gaussian' ;
 opts.model = 'alexnet' ;
 opts.batchNormalization = false ;
-opts.networkType = 'simplenn' ;
+opts.networkType = 'simplenn' ;                       %选择CNN结构为simplenn
 opts.cudnnWorkspaceLimit = 1024*1024*1204 ; % 1GB
-opts = vl_argparse(opts, varargin) ;
+opts = vl_argparse(opts, varargin) ;                  %调用vl_argparse（通过外部参数修改初始值）
+
+% 开始构建网络结构
+
+%{--------------------------------------------------------
+%构建网络的方法
+f=1/100 ;                                   
+net.layers = {} ;
+net.layers{end+1} = struct('type', 'conv', ...          %卷积层C1，randn函数产生4维标准正态分布矩阵，设置偏置有20个
+                           'weights', {{f*randn(5,5,1,20, 'single'), zeros(1, 20, 'single')}}, ...  %filter大小是5*5*1
+                           'stride', 1, ...             %stride = 1
+                           'pad', 0) ;                  %pad = 0
+
+% optionally switch to batch normalization
+if opts.batchNormalization                  %如果opts.batchNormalization为真：
+  net = insertBnorm(net, 1) ;               %在原网络第一层后添加Bnorm
+  net = insertBnorm(net, 4) ;               %在原网络第四层后添加Bnorm
+  net = insertBnorm(net, 7) ;               %在原网络第七层后添加Bnorm
+end
+% BN：在网络的每一层输入的时候，又插入了一个归一化层，也就是先做一个归一化处理，然后再进入网络的下一层。
+%--------------------------------------------------------
+%}
 
 % Define layers
 switch opts.model
@@ -51,15 +72,16 @@ switch opts.model
     return;
 end
 
+
 % final touches
 switch lower(opts.weightInitMethod)
   case {'xavier', 'xavierimproved'}
-    net.layers{end}.weights{1} = net.layers{end}.weights{1} / 10 ;
+    net.layers{end}.weights{1} = net.layers{end}.weights{1} / 10 ;    % 第end层的神经元
 end
-net.layers{end+1} = struct('type', 'softmaxloss', 'name', 'loss') ;
+net.layers{end+1} = struct('type', 'softmaxloss', 'name', 'loss') ;   % softmax层
 
-% Meta parameters
-net.meta.inputSize = net.meta.normalization.imageSize ;
+% Meta parameters 结构元参数
+net.meta.inputSize = net.meta.normalization.imageSize ;  % inputdata
 net.meta.normalization.border = 256 - net.meta.normalization.imageSize(1:2) ;
 net.meta.normalization.interpolation = 'bicubic' ;
 net.meta.normalization.averageImage = [] ;
@@ -73,19 +95,19 @@ else
   lr = logspace(-1, -4, 20) ;
 end
 
-net.meta.trainOpts.learningRate = lr ;
-net.meta.trainOpts.numEpochs = numel(lr) ;
-net.meta.trainOpts.batchSize = bs ;
+net.meta.trainOpts.learningRate = lr ;                  % 学习率
+net.meta.trainOpts.numEpochs = numel(lr) ;              % Epochs
+net.meta.trainOpts.batchSize = bs ;                     % 批的大小
 net.meta.trainOpts.weightDecay = 0.0005 ;
 
 % Fill in default values
-net = vl_simplenn_tidy(net) ;
+net = vl_simplenn_tidy(net) ;                           % 添加默认的属性值
 
 % Switch to DagNN if requested
-switch lower(opts.networkType)
-  case 'simplenn'
+switch lower(opts.networkType)                          % 选择网络结构
+  case 'simplenn'                                       % simplenn结构
     % done
-  case 'dagnn'
+  case 'dagnn'                                          % dagnn结构
     net = dagnn.DagNN.fromSimpleNN(net, 'canonicalNames', true) ;
     net.addLayer('top1err', dagnn.Loss('loss', 'classerror'), ...
                  {'prediction','label'}, 'top1err') ;
@@ -98,8 +120,9 @@ end
 
 % --------------------------------------------------------------------
 function net = add_block(net, opts, id, h, w, in, out, stride, pad, init_bias)
+% 加入Block: 全连接层/卷积层+batchNormalization+relu
 % --------------------------------------------------------------------
-info = vl_simplenn_display(net) ;
+info = vl_simplenn_display(net) ;                       % 获得和/或打印关于CNN的信息
 fc = (h == info.dataSize(1,end) && w == info.dataSize(2,end)) ;
 if fc
   name = 'fc' ;
@@ -169,6 +192,7 @@ function net = alexnet(net, opts)
 net.layers = {} ;
 
 net = add_block(net, opts, '1', 11, 11, 3, 96, 4, 0) ;
+% add_block(net, opts, id, h, w, in, out, stride, pad, init_bias)
 net = add_norm(net, opts, '1') ;
 net.layers{end+1} = struct('type', 'pool', 'name', 'pool1', ...
                            'method', 'max', ...

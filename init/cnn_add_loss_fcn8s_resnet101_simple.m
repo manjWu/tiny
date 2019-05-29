@@ -1,6 +1,6 @@
 function net = cnn_add_loss_fcn8s_resnet101_simple(opts, net)
-
-%%
+% 在预训练网络模型的基础上，移除一些层，增加新的功能层，得到新的网络
+%% 冻结层的参数，这些层在训练时，不会更新权重
 if opts.freezeResNet,
     for i = 1:numel(net.params)
         net.params(i).learningRate = 0;
@@ -10,14 +10,16 @@ end
 %% 
 N = opts.clusterNum;
 skipLRMultipliers = opts.skipLRMult;
-learningRates = skipLRMultipliers;
+learningRates = skipLRMultipliers;%学习率[1, 0.001, 0.0001, 0.00001];
 
-%% remove prob
+%% remove prob 移除原网络的‘prob’层
 if ~isnan(net.getLayerIndex('prob'))
     net.removeLayer('prob');
 end
 
-% 
+
+% remove *res5*,bn5,pool5,fc1000 layers
+% 移除与名字中有‘res5’字样的层，以及bn5层，pool5层和fc1000层
 names = {};
 for i = 1:numel(net.layers)
     if ~isempty(strfind(net.layers(i).name,'res5')) || ...
@@ -57,22 +59,28 @@ end
 
 
 %% add predictors on 'res4b22x'
+% 为'res4b22x'层添加一个预测层（卷积层）
 filter = zeros(1,1,1024,5*N,'single');
 bias = zeros(1,5*N,'single');
 cblk = dagnn.Conv('size',size(filter),'stride',1,'pad',0);
+%层名字为“score_res4”，类型为cblk，输入变量为'res4b22x'，输出变量为'score_res4'
+%层参数名为'score_res4_filter'和'score_res4_bias'
 net.addLayer('score_res4', cblk, 'res4b22x', 'score_res4', ...
              {'score_res4_filter', 'score_res4_bias'});
 fidx = net.getParamIndex('score_res4_filter'); 
 bidx = net.getParamIndex('score_res4_bias'); 
-net.params(fidx).value = filter;
+net.params(fidx).value = filter;% 设定层参数
 net.params(fidx).learningRate = learningRates(2);
 net.params(bidx).value = bias; 
 net.params(bidx).learningRate = learningRates(2);
 
-%% add upsampling 
+%% add upsampling 增加上采样层
 filter = single(bilinear_u(4, 1, 5*N));
 
 % adapt for different input sizes (we end up using 500x500)
+% 上采样层的参数根据input sizes（500x500）而定。
+% 反卷积层upsample表示上采样，upsample=1的时候为正常卷积，upsample>1的时候，
+% 先对输入数据进行上采样再进行卷积操作，可以将这里的upsample看成是步长。
 if all(opts.inputSize==500)
     ctblk = dagnn.ConvTranspose('size', size(filter), 'upsample', 2, ...
                                 'crop', [1,2,1,2], 'hasBias', false);
@@ -86,13 +94,14 @@ else
     error('Input size not supported');
 end
 
-% define bilinear interpolation filter (fixed weights) 
+% define bilinear interpolation filter (fixed weights) （固定权重）
 net.addLayer('score4', ctblk, 'score_res4', 'score4', 'score4f');
 fidx = net.getParamIndex('score4f');
 net.params(fidx).value = filter;
-net.params(fidx).learningRate = 0;
+net.params(fidx).learningRate = 0;%（固定权重不更新）
 
 %% add predictors on 'res3dx'
+%% 为'res3dx'添加预测层。
 filter = zeros(1,1,512,5*N,'single');
 bias = zeros(1,5*N,'single');
 cblk = dagnn.Conv('size',size(filter),'stride',1,'pad',0);
@@ -109,18 +118,19 @@ net.params(bidx).learningRate = learningRates(3);
 % we don't need to add cropping layers for aligning heat maps
 % before adding them
 
-% sum 
+% sum 添加特征融合层，score_res3和score4的特征进行融合（相加）。
 net.addLayer('fusex',dagnn.Sum(),{'score_res3', 'score4'}, ...
              'score_res3_fused');
 
 %% rename last score to score_final 
 net.renameVar('score_res3_fused', 'score_final');
 
-%
+%添加split层，将score_final变量的数据分为score_cls和score_reg两个变量。
 net.addLayer('split', dagnn.Split('childIds', {1:N, N+1:5*N}), ...
              'score_final', {'score_cls', 'score_reg'});
 
 % only use customized loss when we have variable sample size
+% 添加损失层：分类损失loss_cls（逻辑回归损失）和回归损失loss_reg（Huber Loss）
 net.addLayer('loss_cls', dagnn.Loss('loss', 'logistic'), ...
              {'score_cls', 'label_cls'}, 'loss_cls');
 net.addLayer('loss_reg', dagnn.HuberLoss(), ...

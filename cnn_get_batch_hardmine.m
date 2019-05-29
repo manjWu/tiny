@@ -1,6 +1,6 @@
 %  FILE:   cnn_get_batch_hardmine.m
 % 
-%    This function takes a batch of images (including paths and annotations) and
+%    This function takes a batch of images (including paths and annotations×¢ÊÍ) and
 %    generate input and ground truth that will be fed into the detection
 %    network.
 % 

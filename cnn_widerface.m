@@ -37,7 +37,7 @@ opts.batchNormalization = true ;
 opts.weightInitMethod = 'gaussian' ;
 [opts, varargin] = vl_argparse(opts, varargin) ;
 
-opts.minClusterSize = [2, 2]; 
+opts.minClusterSize = [2, 2]; %minCl
 opts.maxClusterSize = opts.inputSize;
 [opts, varargin] = vl_argparse(opts, varargin) ;
 
